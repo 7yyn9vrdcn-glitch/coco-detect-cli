@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coco-detect"
+version = "0.1.0"
+description = "Video object detection pre-pass CLI: runs Ultralytics YOLO over a video window and emits per-frame detections as JSONL"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = [
+    "ultralytics>=8.4.0",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+coco-detect = "coco_detect.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
