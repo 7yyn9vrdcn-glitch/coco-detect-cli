@@ -72,3 +72,13 @@ def test_one_pass_per_imgsz_across_frames():
     assert [c[0] for c in det.calls] == [640, 960]
     assert len(det.calls[0][1]) == 4  # 2 frames x 2 regions in one batch
     assert [len(d) for d in out] == [3, 3]
+
+
+def test_max_batch_splits_forward_passes_and_keeps_order():
+    images = [np.zeros((720, 1280, 3), dtype=np.uint8) for _ in range(2)]
+    det = _RecordingDetector()
+    regions = [parse_region(f"{x},0,320,360@640") for x in (0, 320, 640)]
+    out = detect_regions(det, images, regions, max_batch=1)
+    assert [len(c[1]) for c in det.calls] == [1] * 6
+    # the 2nd crop (region x=320) of frame 0 maps back with its own offset
+    assert out[0][1]["bbox"][0] == 330.0 and out[1][2]["bbox"][0] == 650.0

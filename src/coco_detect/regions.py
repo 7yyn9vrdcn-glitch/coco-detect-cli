@@ -83,8 +83,16 @@ def _crop(image: Any, region: Region) -> tuple[Any, float, float, float]:
     return small, 0.0, 0.0, scale
 
 
-def detect_regions(detector, images: list[Any], regions: list[Region]) -> list[list[dict]]:
-    """Run every region over every image; one forward pass per distinct imgsz."""
+def detect_regions(
+    detector, images: list[Any], regions: list[Region], max_batch: int | None = None,
+) -> list[list[dict]]:
+    """Run every region over every image.
+
+    Crops sharing an imgsz go through the model together, at most
+    ``max_batch`` per forward pass (``None`` = all at once). A TensorRT
+    engine reserves memory for its largest batch, so a small ``max_batch``
+    lets a batch-1 engine fit next to other GPU work.
+    """
     out: list[list[dict]] = [[] for _ in images]
     by_imgsz: dict[int, list[Region]] = {}
     for region in regions:
@@ -98,7 +106,10 @@ def detect_regions(detector, images: list[Any], regions: list[Region]) -> list[l
                 crop, ox, oy, scale = _crop(image, region)
                 crops.append(crop)
                 jobs.append((i, region, ox, oy, scale))
-        results = detector.detect_batch(crops, imgsz=imgsz)
+        step = max_batch or len(crops)
+        results = []
+        for k in range(0, len(crops), step):
+            results.extend(detector.detect_batch(crops[k:k + step], imgsz=imgsz))
         for (i, region, ox, oy, scale), detections in zip(jobs, results):
             for det in detections:
                 x1, y1, x2, y2 = det["bbox"]

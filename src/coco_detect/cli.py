@@ -44,7 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--classes", type=_parse_classes, default=None,
                      help="comma-separated class names to keep (default: all)")
     run.add_argument("--confidence", type=float, default=0.25)
-    run.add_argument("--batch-size", type=int, default=1)
+    run.add_argument("--batch-size", type=int, default=1,
+                     help="max images per forward pass (with --region: crops per pass)")
     run.add_argument("--start-seconds", type=float, default=None,
                      help="window start (absolute frame numbering is preserved)")
     run.add_argument("--window-seconds", type=float, default=None,
@@ -165,10 +166,10 @@ def cmd_run(args: argparse.Namespace, *, detector=None) -> int:
         for frame in frames:
             chunk.append(frame)
             if len(chunk) >= batch_size:
-                _write_chunk(writer, detector, chunk, regions)
+                _write_chunk(writer, detector, chunk, regions, batch_size)
                 chunk = []
         if chunk:
-            _write_chunk(writer, detector, chunk, regions)
+            _write_chunk(writer, detector, chunk, regions, batch_size)
         frames_written = writer.frames_written
         detections_written = writer.detections_written
 
@@ -184,9 +185,11 @@ def cmd_run(args: argparse.Namespace, *, detector=None) -> int:
     return 0
 
 
-def _write_chunk(writer: RawDetectionsWriter, detector, chunk: list, regions: list) -> None:
+def _write_chunk(
+    writer: RawDetectionsWriter, detector, chunk: list, regions: list, batch_size: int,
+) -> None:
     if regions:
-        results = detect_regions(detector, [f.image for f in chunk], regions)
+        results = detect_regions(detector, [f.image for f in chunk], regions, batch_size)
     elif len(chunk) == 1:
         results = [detector.detect(chunk[0].image)]
     else:

@@ -61,6 +61,9 @@ Options of `run` beyond the window:
   with `ymin`, keeps only boxes whose centre is at or below row `Y`.
   Repeatable; boxes are mapped back to source coordinates and concatenated
   without cross-region NMS. Cannot be combined with `--input-scale`.
+  `--batch-size` caps the crops per forward pass (a TensorRT engine reserves
+  memory for its largest batch, so a batch-1 engine with `--batch-size 1`
+  keeps the footprint small).
 
 ## Output format (`raw_detections/v1`)
 
@@ -69,7 +72,7 @@ ascending `frame_index` order **with no gaps** other than the header's
 `frame_step` (frames with zero detections still get a line):
 
 ```jsonl
-{"schema":"raw_detections/v1","input":{"path":"input.mp4","fps":30.0,"width":1920,"height":1080,"frame_count":108000},"model":"yolo26l.pt","confidence":0.25,"classes":["person","sports ball"],"start_frame":0,"input_scale":1.0,"frame_step":1,"vf":null,"regions":null,"runner_version":"0.2.0"}
+{"schema":"raw_detections/v1","input":{"path":"input.mp4","fps":30.0,"width":1920,"height":1080,"frame_count":108000},"model":"yolo26l.pt","confidence":0.25,"classes":["person","sports ball"],"start_frame":0,"input_scale":1.0,"frame_step":1,"vf":null,"regions":null,"runner_version":"0.3.0"}
 {"frame_index":0,"timestamp":0.0,"detections":[{"bbox":[100.5,200.1,140.2,300.0],"score":0.87,"label":"person"}]}
 {"frame_index":1,"timestamp":0.0333,"detections":[]}
 ```

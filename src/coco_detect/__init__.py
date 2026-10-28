@@ -9,6 +9,6 @@ Licensed under AGPL-3.0 (this package links against Ultralytics, which is
 AGPL-3.0 licensed).
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 SCHEMA = "raw_detections/v1"
