@@ -15,7 +15,8 @@ import time
 from pathlib import Path
 
 from coco_detect import SCHEMA, __version__
-from coco_detect.decode import iter_frames, probe_video
+from coco_detect.decode import iter_frames, iter_frames_ffmpeg, probe_video
+from coco_detect.regions import detect_regions, parse_region, region_fits
 from coco_detect.writer import RawDetectionsWriter
 
 LOGGER = logging.getLogger("coco_detect")
@@ -37,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="decode + detect + write raw detections JSONL")
-    run.add_argument("--input", required=True, type=Path, help="input video path")
+    run.add_argument("--input", required=True, help="input video path or URL")
     run.add_argument("--output", required=True, type=Path, help="output JSONL path")
     run.add_argument("--model", required=True, help="YOLO weights (.pt or .engine)")
     run.add_argument("--classes", type=_parse_classes, default=None,
@@ -53,6 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--fallback-fps", type=float, default=30.0,
                      help="fps to assume when the container reports none")
     run.add_argument("--flush-every", type=int, default=100)
+    run.add_argument("--frame-step", type=int, default=1,
+                     help="run inference on every Nth frame of the window "
+                          "(frame_index stays the source frame number)")
+    run.add_argument("--vf", default=None,
+                     help="ffmpeg filter applied after decoding (must keep the frame size)")
+    run.add_argument("--region", dest="regions", action="append", type=parse_region,
+                     default=None, metavar="x,y,w,h@imgsz | full@imgsz[:ymin=Y]",
+                     help="crop this rectangle (or shrink the full frame) and infer at imgsz; "
+                          "repeatable. bboxes are mapped back to source coordinates")
 
     exp = sub.add_parser("export-engine", help="export .pt weights to a TensorRT .engine")
     exp.add_argument("--model", required=True, help="YOLO .pt weights")
@@ -80,6 +90,21 @@ def cmd_run(args: argparse.Namespace, *, detector=None) -> int:
         )
         return 2
 
+    frame_step = int(args.frame_step)
+    if frame_step < 1:
+        LOGGER.error("--frame-step must be >= 1 (got %d)", frame_step)
+        return 2
+    regions = args.regions or []
+    if regions and args.input_scale != 1.0:
+        LOGGER.error("--region and --input-scale cannot be combined")
+        return 2
+    for region in regions:
+        if not region_fits(region, info.width, info.height):
+            LOGGER.error(
+                "--region %s does not fit the %dx%d frame", region.spec, info.width, info.height,
+            )
+            return 2
+
     if detector is None:
         from coco_detect.detector import YoloDetector
 
@@ -102,32 +127,48 @@ def cmd_run(args: argparse.Namespace, *, detector=None) -> int:
         "classes": sorted(args.classes) if args.classes else None,
         "start_frame": start_frame,
         "input_scale": scale,
+        "frame_step": frame_step,
+        "vf": args.vf,
+        "regions": [r.spec for r in regions] or None,
         "runner_version": __version__,
     }
+    use_ffmpeg = frame_step > 1 or bool(args.vf)
     LOGGER.info(
         "run: input=%s model=%s conf=%.3f classes=%s window=[%s,%s)s "
-        "start_frame=%d max_frames=%s batch=%d scale=%.2f -> %s",
+        "start_frame=%d max_frames=%s batch=%d scale=%.2f step=%d decoder=%s "
+        "vf=%s regions=%s -> %s",
         args.input, args.model, args.confidence,
         ",".join(sorted(args.classes)) if args.classes else "<all>",
         args.start_seconds or 0, args.window_seconds or "end",
-        start_frame, max_frames, args.batch_size, scale, args.output,
+        start_frame, max_frames, args.batch_size, scale, frame_step,
+        "ffmpeg" if use_ffmpeg else "opencv", args.vf or "-",
+        ",".join(r.spec for r in regions) or "-", args.output,
     )
 
     started = time.monotonic()
     batch_size = max(1, int(args.batch_size))
-    frames = iter_frames(
-        args.input, fps,
-        start_frame=start_frame, max_frames=max_frames, input_scale=scale,
-    )
-    with RawDetectionsWriter(args.output, header, flush_every=args.flush_every) as writer:
+    if use_ffmpeg:
+        frames = iter_frames_ffmpeg(
+            args.input, fps, info.width, info.height,
+            start_frame=start_frame, max_frames=max_frames,
+            frame_step=frame_step, vf=args.vf, input_scale=scale,
+        )
+    else:
+        frames = iter_frames(
+            args.input, fps,
+            start_frame=start_frame, max_frames=max_frames, input_scale=scale,
+        )
+    with RawDetectionsWriter(
+        args.output, header, flush_every=args.flush_every, frame_step=frame_step,
+    ) as writer:
         chunk: list = []
         for frame in frames:
             chunk.append(frame)
             if len(chunk) >= batch_size:
-                _write_chunk(writer, detector, chunk)
+                _write_chunk(writer, detector, chunk, regions)
                 chunk = []
         if chunk:
-            _write_chunk(writer, detector, chunk)
+            _write_chunk(writer, detector, chunk, regions)
         frames_written = writer.frames_written
         detections_written = writer.detections_written
 
@@ -143,8 +184,10 @@ def cmd_run(args: argparse.Namespace, *, detector=None) -> int:
     return 0
 
 
-def _write_chunk(writer: RawDetectionsWriter, detector, chunk: list) -> None:
-    if len(chunk) == 1:
+def _write_chunk(writer: RawDetectionsWriter, detector, chunk: list, regions: list) -> None:
+    if regions:
+        results = detect_regions(detector, [f.image for f in chunk], regions)
+    elif len(chunk) == 1:
         results = [detector.detect(chunk[0].image)]
     else:
         results = detector.detect_batch([f.image for f in chunk])

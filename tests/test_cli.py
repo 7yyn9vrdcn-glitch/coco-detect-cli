@@ -14,7 +14,17 @@ class _FakeDetector:
     def detect(self, image):
         return [{"bbox": [10.0, 10.0, 20.0, 20.0], "score": 0.9, "label": "person"}]
 
-    def detect_batch(self, images):
+    def detect_batch(self, images, imgsz=None):
+        return [self.detect(i) for i in images]
+
+
+class _MeanDetector:
+    """Reports the frame's mean brightness as the score, to check frame order."""
+
+    def detect(self, image):
+        return [{"bbox": [0.0, 0.0, 1.0, 1.0], "score": float(image.mean()), "label": "x"}]
+
+    def detect_batch(self, images, imgsz=None):
         return [self.detect(i) for i in images]
 
 
@@ -93,3 +103,80 @@ def test_run_start_past_end_errors(tmp_path):
         "--model", "fake.pt", "--start-seconds", "999",
     ])
     assert cmd_run(args, detector=_FakeDetector()) == 2
+
+
+def _run(tmp_path, video, *extra, detector=None):
+    out = tmp_path / "raw.jsonl"
+    args = build_parser().parse_args([
+        "run", "--input", str(video), "--output", str(out), "--model", "fake.pt", *extra,
+    ])
+    rc = cmd_run(args, detector=detector or _FakeDetector())
+    if rc != 0:
+        return rc, None, None
+    lines = [json.loads(x) for x in out.read_text().strip().splitlines()]
+    return rc, lines[0], lines[1:]
+
+
+def test_frame_step_keeps_source_frame_numbers(tmp_path):
+    video = tmp_path / "in.mp4"
+    _make_video(video, frames=30, fps=30.0)
+    rc, header, frames = _run(tmp_path, video, "--frame-step", "10", detector=_MeanDetector())
+    assert rc == 0
+    assert header["frame_step"] == 10
+    assert [r["frame_index"] for r in frames] == [0, 10, 20]
+    # frame i is filled with i*10: the decoded image must be that frame, not a neighbour
+    assert [round(r["detections"][0]["score"] / 10) for r in frames] == [0, 10, 20]
+
+
+def test_frame_step_with_window(tmp_path):
+    video = tmp_path / "in.mp4"
+    _make_video(video, frames=30, fps=30.0)
+    rc, header, frames = _run(
+        tmp_path, video, "--frame-step", "5", "--start-seconds", "0.5",
+        "--window-seconds", "0.5", detector=_MeanDetector(),
+    )
+    assert rc == 0
+    assert header["start_frame"] == 15
+    assert [r["frame_index"] for r in frames] == [15, 20, 25]
+    assert [round(r["detections"][0]["score"] / 10) for r in frames] == [15, 20, 25]
+
+
+def test_vf_is_applied(tmp_path):
+    video = tmp_path / "in.mp4"
+    _make_video(video, frames=3, fps=30.0)
+    rc, header, frames = _run(tmp_path, video, "--vf", "negate", detector=_MeanDetector())
+    assert rc == 0
+    assert header["vf"] == "negate"
+    assert [r["frame_index"] for r in frames] == [0, 1, 2]
+    assert frames[0]["detections"][0]["score"] > 240  # black frame negated
+
+
+def test_bad_vf_fails_loudly(tmp_path):
+    video = tmp_path / "in.mp4"
+    _make_video(video, frames=3, fps=30.0)
+    with pytest.raises(RuntimeError, match="ffmpeg exited"):
+        _run(tmp_path, video, "--vf", "no_such_filter")
+
+
+def test_regions_map_to_source_and_header_keeps_source_size(tmp_path):
+    video = tmp_path / "in.mp4"
+    _make_video(video, frames=2, fps=30.0, size=(64, 48))
+    rc, header, frames = _run(tmp_path, video, "--region", "32,8,32,32@32")
+    assert rc == 0
+    assert (header["input"]["width"], header["input"]["height"]) == (64, 48)
+    assert header["regions"] == ["32,8,32,32@32"]
+    assert frames[0]["detections"][0]["bbox"] == [42.0, 18.0, 52.0, 28.0]
+
+
+def test_region_outside_frame_errors(tmp_path):
+    video = tmp_path / "in.mp4"
+    _make_video(video, frames=2, fps=30.0, size=(64, 48))
+    rc, _, _ = _run(tmp_path, video, "--region", "40,0,32,32@32")
+    assert rc == 2
+
+
+def test_region_with_input_scale_errors(tmp_path):
+    video = tmp_path / "in.mp4"
+    _make_video(video, frames=2, fps=30.0)
+    rc, _, _ = _run(tmp_path, video, "--region", "full@32", "--input-scale", "0.5")
+    assert rc == 2

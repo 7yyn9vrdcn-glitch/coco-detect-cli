@@ -67,18 +67,24 @@ class YoloDetector:
             )
         return out
 
-    def detect(self, image: Any) -> list[dict]:
-        results = self._model(image, conf=self.confidence, half=self._half, verbose=False)
+    def _predict(self, source: Any, imgsz: int | None) -> Any:
+        kwargs = {"conf": self.confidence, "half": self._half, "verbose": False}
+        if imgsz is not None:
+            kwargs["imgsz"] = imgsz
+        return self._model(source, **kwargs)
+
+    def detect(self, image: Any, imgsz: int | None = None) -> list[dict]:
+        results = self._predict(image, imgsz)
         detections: list[dict] = []
         for result in results:
             detections.extend(self._result_to_dicts(result))
         return detections
 
-    def detect_batch(self, images: list[Any]) -> list[list[dict]]:
+    def detect_batch(self, images: list[Any], imgsz: int | None = None) -> list[list[dict]]:
         """One forward pass over N frames; returns per-frame lists in input order."""
         if not images:
             return []
-        results = self._model(images, conf=self.confidence, half=self._half, verbose=False)
+        results = self._predict(images, imgsz)
         out = [self._result_to_dicts(r) for r in results]
         if len(out) != len(images):
             # Defensive: some export formats have been observed to collapse
@@ -87,5 +93,5 @@ class YoloDetector:
                 "batch returned %d results for %d frames; falling back to per-frame",
                 len(out), len(images),
             )
-            return [self.detect(img) for img in images]
+            return [self.detect(img, imgsz) for img in images]
         return out

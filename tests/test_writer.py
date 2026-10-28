@@ -37,3 +37,11 @@ def test_counters(tmp_path):
         w.write_frame(1, 0.0, [])
         assert w.frames_written == 2
         assert w.detections_written == 3
+
+
+def test_frame_step_allows_stride_and_rejects_other_gaps(tmp_path):
+    with RawDetectionsWriter(tmp_path / "out.jsonl", _header(), frame_step=10) as w:
+        w.write_frame(5, 0.0, [])
+        w.write_frame(15, 0.0, [])
+        with pytest.raises(ValueError, match="non-contiguous"):
+            w.write_frame(16, 0.0, [])

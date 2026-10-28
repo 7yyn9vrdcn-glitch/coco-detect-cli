@@ -4,12 +4,14 @@ File layout:
 
 - Line 1: header record — ``schema``, ``input`` (path/fps/width/height/
   frame_count), ``model``, ``confidence``, ``classes``, ``start_frame``,
-  ``input_scale``, ``runner_version``.
+  ``input_scale``, ``frame_step``, ``vf``, ``regions``, ``runner_version``.
   ``input.width/height`` describe the COORDINATE SPACE of the emitted
   bounding boxes (i.e. after ``input_scale`` is applied).
-- Following lines: exactly one record per decoded frame, in ascending
-  ``frame_index`` order with NO GAPS — a frame with zero detections still
-  gets a line. Consumers rely on this to detect misalignment early.
+- Following lines: exactly one record per processed frame, in ascending
+  ``frame_index`` order with NO GAPS other than the header's ``frame_step``
+  (consecutive indices differ by exactly ``frame_step``, 1 by default) — a
+  frame with zero detections still gets a line. Consumers rely on this to
+  detect misalignment early.
 """
 
 from __future__ import annotations
@@ -20,8 +22,11 @@ from typing import IO
 
 
 class RawDetectionsWriter:
-    def __init__(self, path: Path, header: dict, *, flush_every: int = 100) -> None:
+    def __init__(
+        self, path: Path, header: dict, *, flush_every: int = 100, frame_step: int = 1,
+    ) -> None:
         self._path = Path(path)
+        self._frame_step = max(1, int(frame_step))
         self._flush_every = max(1, int(flush_every))
         self._pending = 0
         self._last_frame_index: int | None = None
@@ -32,10 +37,10 @@ class RawDetectionsWriter:
         self._fh.flush()
 
     def write_frame(self, frame_index: int, timestamp: float, detections: list[dict]) -> None:
-        if self._last_frame_index is not None and frame_index != self._last_frame_index + 1:
+        if self._last_frame_index is not None and frame_index != self._last_frame_index + self._frame_step:
             raise ValueError(
                 f"non-contiguous frame_index: {frame_index} after {self._last_frame_index} "
-                "(the schema requires one record per frame with no gaps)"
+                f"(the schema requires one record every {self._frame_step} frame(s) with no gaps)"
             )
         self._last_frame_index = frame_index
         rec = {
